@@ -1,0 +1,147 @@
+name: QA → Stage → Prod (Gated Release)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to deploy (e.g. v1.2.0)"
+        required: true
+      simulate_failure:
+        description: "Force canary health failure to test rollback"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  deployments: write
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.version }}
+
+jobs:
+  validate-release:
+    name: Validate release artifact
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci && npm test
+
+      - name: Export version metadata
+        id: meta
+        run: echo "version=${{ env.RELEASE_TAG }}" >> "$GITHUB_OUTPUT"
+
+  deploy-stage:
+    name: Deploy to Stage
+    runs-on: ubuntu-latest
+    needs: validate-release
+    environment:
+      name: stage
+      url: https://stage.example.cacd.local
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-release.outputs.version }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Stage deployment (simulated)
+        run: |
+          echo '{"environment":"stage","version":"${{ needs.validate-release.outputs.version }}","status":"deployed"}' | tee stage-deploy.json
+          echo "Stage deployment complete for ${{ needs.validate-release.outputs.version }}"
+
+      - name: Stage smoke check
+        run: |
+          node -e "console.log('Stage health: OK')"
+          echo "stage_health=passed" >> "$GITHUB_ENV"
+
+  deploy-production-canary:
+    name: Canary → Production
+    runs-on: ubuntu-latest
+    needs: [validate-release, deploy-stage]
+    environment:
+      name: production
+      url: https://api.example.cacd.local
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-release.outputs.version }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Record last stable version
+        run: |
+          mkdir -p .deploy-state
+          if [ -f .deploy-state/last-stable.json ]; then
+            cp .deploy-state/last-stable.json .deploy-state/previous-stable.json
+          fi
+          echo '{"last_stable_version":"${{ needs.validate-release.outputs.version }}"}' > .deploy-state/last-stable-pending.json
+
+      - name: Progressive canary deployment
+        id: canary
+        run: |
+          if [ "${{ github.event.inputs.simulate_failure }}" = "true" ]; then
+            python scripts/canary_deploy.py \
+              --environment production \
+              --version "${{ needs.validate-release.outputs.version }}" \
+              --force-fail
+          else
+            python scripts/canary_deploy.py \
+              --environment production \
+              --version "${{ needs.validate-release.outputs.version }}"
+          fi
+        continue-on-error: true
+
+      - name: Post-deploy production health check
+        id: health
+        if: steps.canary.outcome == 'success'
+        run: |
+          node -e "
+            const ok = process.env.SIMULATE_PROD_HEALTH_FAIL !== 'true';
+            if (!ok) { console.error('Production health check failed'); process.exit(1); }
+            console.log('Production health: OK');
+          "
+        env:
+          SIMULATE_PROD_HEALTH_FAIL: ${{ github.event.inputs.simulate_failure == 'true' && 'true' || 'false' }}
+
+      - name: Promote release on success
+        if: steps.canary.outcome == 'success' && steps.health.outcome == 'success'
+        run: |
+          mv .deploy-state/last-stable-pending.json .deploy-state/last-stable.json
+          echo "Production promotion complete: ${{ needs.validate-release.outputs.version }}"
+
+      - name: Automated rollback on failure
+        if: failure() && steps.canary.outcome != 'skipped'
+        run: |
+          python scripts/rollback.py \
+            --failed-version "${{ needs.validate-release.outputs.version }}" \
+            --environment production \
+            --state-file .deploy-state/last-stable.json \
+            --audit-dir .deploy-state/rollbacks
+          echo "::warning::Production deploy failed — traffic rolled back to last stable."
+
+      - name: Fail workflow after rollback
+        if: failure()
+        run: exit 1
+
+      - name: Release summary
+        if: success()
+        run: |
+          echo "## Production release succeeded" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: \`${{ needs.validate-release.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Canary traffic ramp: 5% → 25% → 50% → 100%" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,97 @@
+name: Dev → QA Fast-Track
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: dev-to-qa-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  anti-overwrite-guard:
+    name: Enforce up-to-date with main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with full history for merge-base
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify branch is rebased on latest main
+        run: |
+          git fetch origin main
+          BEHIND=$(git rev-list --count HEAD..origin/main)
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "::error::Branch is $BEHIND commit(s) behind origin/main. Rebase or merge main before merging to prevent overwrite conflicts."
+            exit 1
+          fi
+          echo "Branch is up to date with origin/main."
+
+  test-and-agent-review:
+    name: Jest + Multi-Agent PR Review
+    runs-on: ubuntu-latest
+    needs: anti-overwrite-guard
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: agents/requirements.txt
+
+      - name: Install agent dependencies
+        run: pip install -r agents/requirements.txt
+
+      - name: Generate PR diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff "${BASE_SHA}...${HEAD_SHA}" --no-color -U3 > /tmp/pr.diff
+          echo "Diff lines: $(wc -l < /tmp/pr.diff)"
+
+      - name: Run Multi-Agent PR reviewer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_DIFF_FILE: /tmp/pr.diff
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'qwen/qwen-2.5-coder-32b-instruct' }}
+        run: python agents/devops_agent.py
+        continue-on-error: false
+
+      - name: QA gate summary
+        if: success()
+        run: |
+          echo "## Dev → QA fast-track passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Branch is current with \`main\` (anti-overwrite)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Jest unit tests passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Multi-agent PR review posted to PR #${{ github.event.pull_request.number }}" >> "$GITHUB_STEP_SUMMARY"
