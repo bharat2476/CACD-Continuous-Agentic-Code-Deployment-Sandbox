@@ -8,7 +8,7 @@
 
 **Reference implementation for secure, agent-assisted delivery on GitHub.**
 
-This repository is an engineering-operating-model showcase: it demonstrates how a team can combine **trunk-based development**, **platform guardrails**, and **multi-agent automation** to ship faster without sacrificing safety. Use it as a portfolio piece, an interview walkthrough, or a starting template when rolling out agentic DevOps in your organization.
+This repository is an engineering-operating-model showcase: it demonstrates how a team can combine **trunk-based development**, **platform guardrails**, and **multi-agent automation** to ship faster without sacrificing safety. Use it as a portfolio piece, an walkthrough, or a starting template when rolling out agentic DevOps in your organization.
 
 ---
 
