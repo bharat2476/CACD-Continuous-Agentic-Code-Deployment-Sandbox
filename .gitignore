@@ -13,3 +13,5 @@ venv/
 .deploy-state/rollbacks/
 stage-deploy.json
 *.local.json
+pr.diff
+/tmp/

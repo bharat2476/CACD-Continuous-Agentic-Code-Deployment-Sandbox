@@ -97,7 +97,7 @@ def main() -> None:
     parser.add_argument(
         "--force-fail",
         action="store_true",
-        help="Simulate health check failure after 25% canary (for rollback testing)",
+        help="Simulate health check failure after 25 percent canary (for rollback testing)",
     )
     args = parser.parse_args()
     sys.exit(run_canary(args.environment, args.version, args.force_fail))

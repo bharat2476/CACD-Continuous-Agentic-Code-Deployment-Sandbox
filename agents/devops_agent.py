@@ -343,15 +343,22 @@ def post_pr_comment(ctx: ReviewContext, body: str) -> None:
         print(f"Posted new PR comment on #{ctx.pr_number}")
 
 
-def resolve_context(args: argparse.Namespace) -> ReviewContext:
-    token = args.token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if not token:
+def resolve_context(args: argparse.Namespace, dry_run: bool = False) -> ReviewContext:
+    token = args.token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+    if not token and not dry_run:
         raise SystemExit("GITHUB_TOKEN (or --token) is required to post PR comments.")
 
     repo = args.repo or os.environ.get("GITHUB_REPOSITORY")
-    pr_number = args.pr_number or int(os.environ.get("PR_NUMBER", "0"))
-    if not repo or not pr_number:
-        raise SystemExit("GITHUB_REPOSITORY and PR_NUMBER (or --repo / --pr-number) are required.")
+    pr_number = args.pr_number or int(os.environ.get("PR_NUMBER", "0") or "0")
+
+    if dry_run:
+        repo = repo or "local/cacd-sandbox"
+        pr_number = pr_number or 1
+    else:
+        if not repo or not pr_number:
+            raise SystemExit(
+                "GITHUB_REPOSITORY and PR_NUMBER (or --repo / --pr-number) are required."
+            )
 
     base = args.base or os.environ.get("GITHUB_BASE_REF", "main")
     head = args.head or os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_SHA", "HEAD")
@@ -427,7 +434,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print report without posting")
     args = parser.parse_args()
 
-    ctx = resolve_context(args)
+    ctx = resolve_context(args, dry_run=args.dry_run)
     run_review(ctx, dry_run=args.dry_run)
 
 
